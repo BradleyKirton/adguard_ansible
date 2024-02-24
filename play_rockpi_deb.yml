@@ -1,0 +1,159 @@
+---
+- name: Setup adguard home on a rockpi with debian OS
+  hosts: all
+  vars:
+    username: "radxa"
+  remote_user: "{{ username }}"
+  tasks:
+    - name: Upgrading the distribution
+      ansible.builtin.apt:
+        autoclean: yes
+        autoremove: yes
+        update_cache: yes
+        install_recommends: yes
+        upgrade: dist
+      become: true
+
+    - name: Removing undesirable packages
+      ansible.builtin.package:
+        name: "{{ item }}"
+        state: absent
+      with_items:
+        - postfix
+        - telnet
+      become: true
+
+    - name: Adding journal vacumm service
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+      with_items:
+        - src: journal-vacuum.service
+          dest: /etc/systemd/system/journal-vacuum.service
+        - src: journal-vacuum.timer
+          dest: /etc/systemd/system/journal-vacuum.timer
+      become: true
+
+    - name: Journal vacumm service
+      ansible.builtin.systemd:
+        name: journal-vacuum.timer
+        state: started
+        enabled: yes
+      become: true
+
+    - name: Installing dependencies
+      ansible.builtin.apt:
+        autoclean: yes
+        autoremove: yes
+        update_cache: yes
+        install_recommends: yes
+        name:
+          - ufw
+          - zsh
+          - git
+          - avahi-daemon
+          - avahi-utils
+          - libnss-mdns
+      become: true
+
+    - name: Setting the user shell to zsh
+      ansible.builtin.user:
+        name: "{{ username }}"
+        shell: /usr/bin/zsh
+      become: true
+
+    - name: Remove oh-my-zsh if necessary
+      ansible.builtin.file:
+        path: "/home/{{ username }}/.oh-my-zsh"
+        state: absent
+
+    - name: Fetch the oh-my-zsh installer
+      ansible.builtin.uri:
+        url: https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh
+        return_content: yes
+      register: ohmyzsh_installer
+
+    - name: Installing oh-my-zsh
+      ansible.builtin.shell:
+        cmd: sh -s -- -y
+        chdir: "/home/{{ username }}"
+        stdin: "{{ ohmyzsh_installer.content }}"
+
+    - name: Configuring oh-my-zsh plugins
+      ansible.builtin.lineinfile:
+        path: "/home/{{ username }}/.zshrc"
+        regexp: ^plugins=
+        line: plugins=(git systemd)
+
+    - name: Configuring oh-my-zsh.sh
+      ansible.builtin.lineinfile:
+        path: "/home/{{ username }}/.zshrc"
+        line: source $ZSH/oh-my-zsh.sh
+
+    - name: Fetching the adguard home installer installer script
+      ansible.builtin.uri:
+        url: https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh
+        return_content: yes
+      register: adguard_installer
+
+    - name: Running the adguard home installer script
+      ansible.builtin.shell:
+        cmd: sh -s -- -r
+        stdin: "{{ adguard_installer.content }}"
+      become: true
+
+    - name: Starting adguard home
+      ansible.builtin.shell: /opt/AdGuardHome/AdGuardHome -s start
+      become: true
+
+    - name: Configuring ufw
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        state: enabled
+      with_items:
+        - ssh
+        - http
+        - 3000
+      become: true
+
+    - name: Restarting ufw
+      ansible.builtin.service:
+        name: ufw
+        state: restarted
+        enabled: true
+      become: true
+
+    - name: Updating the hosts file
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regex: 127\.0\.1\.1
+        line: 127.0.1.1 adguard
+      become: true
+
+    - name: Configuring the hostname
+      ansible.builtin.shell: hostnamectl set-hostname adguard
+      become: true
+
+    - name: Enabling the avahi-daemon
+      ansible.builtin.service:
+        name: avahi-daemon.service
+        state: restarted
+        enabled: true
+      become: true
+
+    - name: Creating getty@tty1.service.d directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/getty@tty1.service.d/
+        state: directory
+      become: true
+
+    - name: Enabling autologin
+      ansible.builtin.template:
+        src: autologin.conf
+        dest: /etc/systemd/system/getty@tty1.service.d/autologin.conf
+      become: true
+
+    - name: Restarting the remote
+      ansible.builtin.reboot:
+      become: true
